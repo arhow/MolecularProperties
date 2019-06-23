@@ -43,8 +43,14 @@ class Parallel(object):
     def worker(self, item):
         try:
             d_ = self.objective(item, **self.objective_kwargs)
-            assert type(d_)==dict, 'objective not return a dict object'
-            self.X.append({**d_})
+            
+            if type(d_) == dict:
+                self.X.append(d_)
+            elif type(d_) == list:
+                for d_i_ in d_:
+                    self.X.append(d_i_)
+            else:
+                'objective not return a dict object or a dict list'
         except Exception as e:
             raise Exception()
 

@@ -26,6 +26,25 @@ class ComprehensiveFCParameters(dict):
         })
 
         super(ComprehensiveFCParameters, self).__init__(name_to_param)
+        
+class BasicFCParameters(dict):
+
+    def __init__(self):
+        name_to_param = {}
+
+        for name, func in aggregate_feature_calculators.__dict__.items():
+            if callable(func) and hasattr(func, "fctype") and len(getargspec(func).args) == 1:
+                if hasattr(func, "fclvl") and getattr(func, "fclvl") == 0:
+                    name_to_param[name] = None
+
+        name_to_param.update({
+            # "rms": [],
+            # "rssq": [],
+            # "crest_factor": [],
+            # "peak_peak_amp": [],
+        })
+
+        super(ComprehensiveFCParameters, self).__init__(name_to_param)     
 
 
 def _convert_to_output_format(param):

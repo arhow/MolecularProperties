@@ -67,6 +67,7 @@ def skewness(x):
 def kurtosis(x):
     return stats.kurtosis(x)
 
+@set_property("fclvl", 0)
 @set_property("fctype", "simple")
 def mean(x):
     return np.mean(x)
@@ -75,14 +76,17 @@ def mean(x):
 def median(x):
     return np.median(x)
 
+@set_property("fclvl", 0)
 @set_property("fctype", "simple")
 def max(x):
     return np.max(x)
 
+@set_property("fclvl", 0)
 @set_property("fctype", "simple")
 def min(x):
     return np.min(x)
 
+@set_property("fclvl", 0)
 @set_property("fctype", "simple")
 def std(x):
     return np.std(x)
