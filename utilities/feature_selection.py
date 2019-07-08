@@ -29,8 +29,6 @@ from eli5.sklearn import PermutationImportance
 
 import copy
 
-from .process import sk_process
-
 
 def _evaluate(df_feature_importances, key='average_model_weight'):
     df_feature_importances['average_permutation_weight'] = df_feature_importances[
