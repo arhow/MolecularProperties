@@ -132,7 +132,7 @@ def sk_process(df_train, param, message, df_test=None, trial=None, is_output_fea
             df_test_pred = pd.concat([df_test_pred, df_test_pred_i], axis=1)
 
         history.append \
-            ({'fold_n': fold_n, 'train': metric(y_train, y_train_pred), 'valid': metric(y_valid, y_valid_pred)})
+            ({'fold_n': fold_n, 'train': metric(y_train, y_train_pred, group=df_train['group']), 'valid': metric(y_valid, y_valid_pred, group=df_train['group'])})
 
     df_his = pd.DataFrame(history)
 

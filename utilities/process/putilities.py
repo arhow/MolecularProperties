@@ -4,11 +4,11 @@ from catboost import CatBoostRegressor
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import StratifiedKFold, KFold, RepeatedKFold,TimeSeriesSplit, GroupKFold
 from sklearn.model_selection import train_test_split
-from sklearn import metrics
+from utilities.process.pmetric import *
 from sklearn import linear_model
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import NuSVR, SVR
-from sklearn.metrics import mean_absolute_error
+
 
 
 def _str2class(s):
