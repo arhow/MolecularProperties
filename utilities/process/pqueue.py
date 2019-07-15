@@ -5,13 +5,14 @@ from utilities.process.pnode import PNode
 
 class PQueue(object):
 
-    def __init__(self, df_train, df_test, param, trial):
+    def __init__(self, df_train, df_test, param, trial, message=''):
         self.root = PNode()
         self.last_pnode_point = self.root
         self.df_train = df_train
         self.df_test = df_test
         self.param = param.copy()
         self.trial = trial
+        self.queue_message = message
         return
 
     def insert_node(self, pnode):
@@ -23,6 +24,8 @@ class PQueue(object):
         return
 
     def _run_pnode(self, pnode, **kwargs):
+        
+        pnode.message = '{}-{}'.format(self.queue_message, pnode.message)
         next_node_kwargs = pnode.run(self.df_train, self.df_test, self.param, self.trial, **kwargs)
         if type(pnode.next)==type(None):
             return
