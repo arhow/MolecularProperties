@@ -3,9 +3,10 @@ import optuna
 
 class PNode(object):
 
-    def __init__(self, next=None, previous=None):
-        self.next = None
-        self.previous = None
+    def __init__(self, message=None, next=None, previous=None):
+        self.message = message
+        self.next = next
+        self.previous = previous
         return
 
     def run(self, *args, **kwargs):
