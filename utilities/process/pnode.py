@@ -83,8 +83,8 @@ class OptHyperProcess(PNode):
     mytrial=[]
     lgbm_objective_param = {
         'range': {
-            'learning_rate_range': (.01, .5),
-            'feature_fraction_range': (0.6, 1),
+            'learning_rate': (.01, .5),
+            'feature_fraction': (0.6, 1),
             'bagging_fraction': (0.6, 1),
             'min_data_in_leaf': (200, 800),
             'lambda_l1': (1e-6, 1e2),
@@ -94,7 +94,7 @@ class OptHyperProcess(PNode):
             'random_state': (1, 9999)
         },
         'process_param': {},
-        'message': 'lgbm_objective_param',
+        'message': None,
         'train': None
     }
 
@@ -152,7 +152,7 @@ class OptHyperProcess(PNode):
 
     def run(self, df_train, df_test, param, trial):
         OptHyperProcess.mytrial = []
-        OptHyperProcess.lgbm_objective_param['param'] = param.copy()
+        OptHyperProcess.lgbm_objective_param['process_param'] = param.copy()
         OptHyperProcess.lgbm_objective_param['message'] = self.message
         OptHyperProcess.lgbm_objective_param['train'] = df_train
         study = optuna.create_study()
