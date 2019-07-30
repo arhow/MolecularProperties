@@ -934,6 +934,7 @@ def null_collate(batch):
 
 def read_pickle_from_file(pickle_file):
     with open(pickle_file,'rb') as f:
+        
         x = pickle.load(f)
     return x
 
@@ -961,3 +962,338 @@ def time_to_str(t, mode='min'):
 
     else:
         raise NotImplementedError
+
+class NullScheduler():
+    def __init__(self, lr=0.01 ):
+        super(NullScheduler, self).__init__()
+        self.lr    = lr
+        self.cycle = 0
+
+    def __call__(self, time):
+        return self.lr
+
+    def __str__(self):
+        string = 'NullScheduler\n' \
+                + 'lr=%0.5f '%(self.lr)
+        return string
+
+class LinearBn(nn.Module):
+    def __init__(self, in_channel, out_channel, act=None):
+        super(LinearBn, self).__init__()
+        self.linear = nn.Linear(in_channel, out_channel, bias=False)
+        self.bn   = nn.BatchNorm1d(out_channel,eps=1e-05, momentum=0.1)
+        self.act  = act
+
+    def forward(self, x):
+        x = self.linear(x)
+        if self.bn is not None:
+            x = self.bn(x)
+        if self.act is not None:
+            x = self.act(x)
+        return x
+
+class GraphConv(nn.Module):
+    def __init__(self, node_dim, edge_dim ):
+        super(GraphConv, self).__init__()
+
+        self.encoder = nn.Sequential(
+            LinearBn(edge_dim, 256),
+            nn.ReLU(inplace=True),
+            LinearBn(256, 256),
+            nn.ReLU(inplace=True),
+            LinearBn(256, 128),
+            nn.ReLU(inplace=True),
+            LinearBn(128, node_dim * node_dim),
+            #nn.ReLU(inplace=True),
+        )
+
+        self.gru  = nn.GRU(node_dim, node_dim, batch_first=False, bidirectional=False)
+        self.bias = nn.Parameter(torch.Tensor(node_dim))
+        self.bias.data.uniform_(-1.0 / math.sqrt(node_dim), 1.0 / math.sqrt(node_dim))
+
+
+    def forward(self, node, edge_index, edge, hidden):
+        num_node, node_dim = node.shape
+        num_edge, edge_dim = edge.shape
+        edge_index = edge_index.t().contiguous()
+
+        #1. message :  m_j = SUM_i f(n_i, n_j, e_ij)  where i is neighbour(j)
+        x_i     = torch.index_select(node, 0, edge_index[0])
+        edge    = self.encoder(edge).view(-1,node_dim,node_dim)
+        #message = x_i.view(-1,node_dim,1)*edge
+        #message = message.sum(1)
+        message = x_i.view(-1,1,node_dim)@edge
+        message = message.view(-1,node_dim)
+        message = scatter_('mean', message, edge_index[1], dim_size=num_node)
+        message = F.relu(message +self.bias)
+
+        #2. update: n_j = f(n_j, m_j)
+        update = message
+
+        #batch_first=True
+        update, hidden = self.gru(update.view(1,-1,node_dim), hidden)
+        update = update.view(-1,node_dim)
+
+        return update, hidden
+
+class Set2Set(torch.nn.Module):
+
+    def softmax(self, x, index, num=None):
+        x = x -  scatter_max(x, index, dim=0, dim_size=num)[0][index]
+        x = x.exp()
+        x = x / (scatter_add(x, index, dim=0, dim_size=num)[index] + 1e-16)
+        return x
+
+    def __init__(self, in_channel, processing_step=1):
+        super(Set2Set, self).__init__()
+        num_layer = 1
+        out_channel = 2 * in_channel
+
+        self.processing_step = processing_step
+        self.in_channel  = in_channel
+        self.out_channel = out_channel
+        self.num_layer   = num_layer
+        self.lstm = torch.nn.LSTM(out_channel, in_channel, num_layer)
+        self.lstm.reset_parameters()
+
+    def forward(self, x, batch_index):
+        batch_size = batch_index.max().item() + 1
+
+        h = (x.new_zeros((self.num_layer, batch_size, self.in_channel)),
+             x.new_zeros((self.num_layer, batch_size, self.in_channel)))
+
+        q_star = x.new_zeros(batch_size, self.out_channel)
+        for i in range(self.processing_step):
+            q, h = self.lstm(q_star.unsqueeze(0), h)
+            q = q.view(batch_size, -1)
+
+            e = (x * q[batch_index]).sum(dim=-1, keepdim=True) #shape = num_node x 1
+            a = self.softmax(e, batch_index, num=batch_size)   #shape = num_node x 1
+            r = scatter_add(a * x, batch_index, dim=0, dim_size=batch_size) #apply attention #shape = batch_size x ...
+            q_star = torch.cat([q, r], dim=-1)
+
+        return q_star
+
+#message passing
+class Net(torch.nn.Module):
+    def __init__(self, node_dim=13, edge_dim=5, num_target=8):
+        super(Net, self).__init__()
+        self.num_propagate = 8
+        self.num_s2s = 6
+
+        self.preprocess = nn.Sequential(
+            LinearBn(node_dim, 128),
+            nn.ReLU(inplace=True),
+            LinearBn(128, 128),
+            nn.ReLU(inplace=True),
+        )
+
+        self.propagate = GraphConv(128, edge_dim)
+        self.set2set = Set2Set(128, processing_step=self.num_s2s)
+
+
+        #predict coupling constant
+        self.predict = nn.Sequential(
+            LinearBn(4*128, 1024),  #node_hidden_dim
+            nn.ReLU(inplace=True),
+            LinearBn( 1024, 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, num_target),
+        )
+
+    def forward(self, node, edge, edge_index, node_index, coupling_index):
+
+        num_node, node_dim = node.shape
+        num_edge, edge_dim = edge.shape
+
+        node   = self.preprocess(node)
+        hidden = node.view(1,num_node,-1)
+
+        for i in range(self.num_propagate):
+            node, hidden =  self.propagate(node, edge_index, edge, hidden)
+
+        pool = self.set2set(node, node_index)
+
+        #---
+        num_coupling = len(coupling_index)
+        coupling_atom0_index, coupling_atom1_index, coupling_type_index, coupling_batch_index = torch.split(coupling_index,1,dim=1)
+
+        pool  = torch.index_select( pool, dim=0, index=coupling_batch_index.view(-1))
+        node0 = torch.index_select( node, dim=0, index=coupling_atom0_index.view(-1))
+        node1 = torch.index_select( node, dim=0, index=coupling_atom1_index.view(-1))
+
+        predict = self.predict(torch.cat([pool,node0,node1],-1))
+        predict = torch.gather(predict, 1, coupling_type_index).view(-1)
+        return predict
+    
+from torch_geometric.utils import scatter_
+from torch_scatter import *
+
+
+def do_train(net, schduler, optimizer, train_loader, valid_loader, epochs = 10, verbose=0):
+    
+    start = timer()    
+    start_epoch= 0
+    start_iter = 0
+    iter_ = start_iter
+#     batch_size = 16
+
+    epoch_len = len(train_loader)
+    his = []
+    for epoch in range(start_epoch, epochs, 1):
+
+        epoch_loss = 0
+        for node, edge, edge_index, node_index, coupling_value, coupling_index, infor in train_loader:
+            
+            # learning rate schduler -------------
+            lr = schduler(iter_)
+            if lr<0 : break
+            adjust_learning_rate(optimizer, lr)
+            rate = get_learning_rate(optimizer)
+
+            # train  -------------
+            net.train()
+            node = node.cuda()
+            edge = edge.cuda()
+            edge_index = edge_index.cuda()
+            node_index = node_index.cuda()
+            coupling_value = coupling_value.cuda()
+            coupling_index = coupling_index.cuda()
+            
+            optimizer.zero_grad()
+            predict = net(node, edge, edge_index, node_index, coupling_index)
+            # update loss
+            loss = criterion(predict, coupling_value)
+            loss.backward()
+            optimizer.step()
+            
+            # print statistics  ------------
+            epoch_loss += loss.item()
+            iter_ += 1
+            
+            if verbose > 0:
+                print(time_to_str((timer() - start),'min'), f'iter_:{iter_%epoch_len}/{epoch_len}', f'loss {loss.item():.4}', end='',flush=True)
+                print('\r',end='',flush=True)
+                
+        valid_loss = do_valid(net, valid_loader)
+        epoch_loss /= len(train_loader)
+        
+#         d_ = {'epoch':epoch, 'rate':rate,'loss':epoch_loss,'val_loss_1JHC':valid_loss[0],'val_loss_2JHC':valid_loss[1]}
+#         d_ = {'val_loss_3JHC':valid_loss[2], 'val_loss_1JHN':valid_loss[3], 'val_loss_2JHN':valid_loss[4], 'val_loss_3JHN':valid_loss[5], 'val_loss_2JHH':valid_loss[6], **d_}
+#         d_ = {'val_loss_3JHH':valid_loss[7], 'val_loss':valid_loss[8], 'val_mae':valid_loss[9], 'val_logmae':valid_loss[10], **d_}
+#         his.append(d_)
+        if verbose > 0:
+            time_ = time_to_str((timer() - start),'min')
+            print(f'time {time_}, epoch {epoch} rate {rate} loss {epoch_loss:.4} val_loss {valid_loss[10]:.4}')
+    return his
+
+def do_valid(net, valid_loader):
+
+    valid_num = 0
+    valid_predict = []
+    valid_coupling_type  = []
+    valid_coupling_value = []
+
+    valid_loss = 0
+    for b, (node, edge, edge_index, node_index, coupling_value, coupling_index, infor) in enumerate(valid_loader):
+
+        net.eval()
+        node = node.cuda()
+        edge = edge.cuda()
+        edge_index = edge_index.cuda()
+        node_index = node_index.cuda()
+
+        coupling_value = coupling_value.cuda()
+        coupling_index = coupling_index.cuda()
+
+        with torch.no_grad():
+            predict = net(node, edge, edge_index, node_index, coupling_index)
+            loss = criterion(predict, coupling_value)
+
+        valid_predict.append(predict.data.cpu().numpy())
+        valid_coupling_type.append(coupling_index[:,2].data.cpu().numpy())
+        valid_coupling_value.append(coupling_value.data.cpu().numpy())
+
+        valid_loss += loss.item()
+        pass
+
+    valid_loss /= len(valid_loader)
+
+    #compute
+    predict = np.concatenate(valid_predict)
+    coupling_value = np.concatenate(valid_coupling_value)
+    coupling_type  = np.concatenate(valid_coupling_type).astype(np.int32)
+    mae, log_mae   = compute_kaggle_metric( predict, coupling_value, coupling_type,)
+
+    num_target = NUM_COUPLING_TYPE
+    for t in range(NUM_COUPLING_TYPE):
+        if mae[t] is None:
+            mae[t] = 0
+            log_mae[t]  = 0
+            num_target -= 1
+    mae_mean, log_mae_mean = np.sum(mae)/num_target, np.sum(log_mae)/num_target
+    valid_loss_detail = log_mae + [valid_loss, mae_mean, log_mae_mean]
+    
+    return valid_loss_detail
+
+def predict(test_loader):
+    valid_num = 0
+    valid_predict = []
+    valid_coupling_type  = []
+    valid_coupling_value = []
+
+    valid_loss = 0
+    df_pred = pd.DataFrame()
+    for b, (node, edge, edge_index, node_index, coupling_value, coupling_index, infor) in enumerate(test_loader):
+
+        #if b==5: break
+        net.eval()
+        node = node.cuda()
+        edge = edge.cuda()
+        edge_index = edge_index.cuda()
+        node_index = node_index.cuda()
+
+        coupling_value = coupling_value.cuda()
+        coupling_index = coupling_index.cuda()
+
+        with torch.no_grad():
+            predict = net(node, edge, edge_index, node_index, coupling_index)
+        df_pred_i = pd.DataFrame({'id':infor[0][2], 'scalar_coupling_constant':predict.cpu().detach().numpy() })
+        df_pred = pd.concat([df_pred, df_pred_i], axis=0)
+    return df_pred
+
+
+def adjust_learning_rate(optimizer, lr):
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+def get_learning_rate(optimizer):
+    lr=[]
+    for param_group in optimizer.param_groups:
+        lr +=[ param_group['lr'] ]
+
+    assert(len(lr)==1) #we support only one param_group
+    lr = lr[0]
+
+    return lr
+
+def criterion(predict, truth):
+    predict = predict.view(-1)
+    truth   = truth.view(-1)
+    assert(predict.shape==truth.shape)
+
+    loss = torch.abs(predict-truth)
+    loss = loss.mean()
+    loss = torch.log(loss)
+    return loss
+
+
+def criterion_mae(predict, truth):
+    predict = predict.view(-1)
+    truth   = truth.view(-1)
+    assert(predict.shape==truth.shape)
+
+    loss = torch.abs(predict-truth)
+    loss = loss.mean()
+#     loss = torch.log(loss)
+    return loss    
