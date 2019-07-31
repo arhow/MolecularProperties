@@ -28,7 +28,7 @@ class SortFeatureSelectTopNProcess(PNode):
     def run(self, df_train, df_test, param, trial):
         df_his, df_feature_importances, df_valid_pred, df_test_pred = sk_process(df_train, param.copy(), self.message, df_test=None, trial=trial, is_output_feature_importance=True, trial_level=0)
         sorted_columns = sort_feature_importances(df_feature_importances, 'average_permutation_weight')
-        sorted_columns = sorted_columns[:200] if len(sorted_columns) > 200 else sorted_columns
+        sorted_columns = sorted_columns[:self.top_n] if len(sorted_columns) > self.top_n else sorted_columns
         param['columns'] = sorted_columns
         return {}
 
